@@ -1,0 +1,102 @@
+name: K8s Releases
+on:
+  push:
+    branches-ignore:
+      - "**"
+    tags:
+      - "test*"
+      - "pre*"
+      - "prod*"
+
+env:
+  DOCKER_REGISTRY_REPOSITORY: invoicereader.azurecr.io
+  DOCKER_IMAGE_NAME: ds-invoicereader-finalization
+
+jobs:
+  tag_release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set env
+        run: |
+          echo "GITHUB_SHA_SHORT=$(echo $GITHUB_SHA | cut -c 1-7)" >> $GITHUB_ENV
+          echo "GIT_TAG=$(echo $GITHUB_REF | sed -e 's|refs/tags/||')" >> $GITHUB_ENV
+
+      - name: Tag released Docker image
+        run: |
+          echo "${{ secrets.INVOICEREADER_DOCKER_REGISTRY_PASSWORD }}" | docker login -u "${{ secrets.INVOICEREADER_DOCKER_REGISTRY_USERNAME }}" --password-stdin "${{ env.DOCKER_REGISTRY_REPOSITORY }}"
+          docker pull "${{ env.DOCKER_REGISTRY_REPOSITORY }}/${{ env.DOCKER_IMAGE_NAME }}:sha-${{ env.GITHUB_SHA_SHORT }}"
+          docker tag "${{ env.DOCKER_REGISTRY_REPOSITORY }}/${{ env.DOCKER_IMAGE_NAME }}:sha-${{ env.GITHUB_SHA_SHORT }}" "${{ env.DOCKER_REGISTRY_REPOSITORY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ env.GIT_TAG }}"
+          docker push "${{ env.DOCKER_REGISTRY_REPOSITORY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ env.GIT_TAG }}"
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: tag_release
+    steps:
+      - uses: actions/checkout@master
+      # prepare tools
+      - uses: azure/setup-helm@v1
+      - uses: mdgreenwald/mozilla-sops-action@v1
+      - run: helm plugin install https://github.com/jkroepke/helm-secrets --version v3.6.0
+      - uses: azure/setup-kubectl@v1
+
+      # loging to azure and to kubernetes
+      - uses: azure/login@v1
+        with:
+          creds: ${{ secrets.INVOICEREADER_AZURE_CREDENTIALS  }}
+
+      - name: Set ENVs
+        run: |
+          echo "GITHUB_SHA_SHORT=$(echo $GITHUB_SHA | cut -c 1-7)" >> $GITHUB_ENV
+          echo "GIT_TAG=$(echo $GITHUB_REF | sed -e 's|refs/tags/||')" >> $GITHUB_ENV
+
+      - name: preparelogin-test
+        if: ${{ startsWith( env.GIT_TAG , 'test') }}
+        env:
+          KUBESECRET: ${{ secrets.INVOICEREADER_KUBE_CONFIG_TEST }}
+        run: |
+          mkdir -p ~/.kube
+          echo "${KUBESECRET// /}" | base64 --decode > ~/.kube/config
+          echo "VALUES_CHART_ENV=digitoo-test" >> $GITHUB_ENV
+          echo "K8S_NAMESPACE=datasentics-invoicereader-test" >> $GITHUB_ENV
+
+
+      - name: preparelogin-preprod
+        if: ${{ startsWith( env.GIT_TAG , 'pre') }}
+        env:
+          KUBESECRET: ${{ secrets.INVOICEREADER_KUBE_CONFIG_PREPROD }}
+        run: |
+          mkdir -p ~/.kube
+          echo "${KUBESECRET// /}" | base64 --decode > ~/.kube/config
+          echo "VALUES_CHART_ENV=digitoo-preprod" >> $GITHUB_ENV
+          echo "K8S_NAMESPACE=datasentics-invoicereader" >> $GITHUB_ENV
+
+
+      - name: preparelogin-prod
+        if: ${{ startsWith( env.GIT_TAG , 'prod') }}
+        env:
+          KUBESECRET: ${{ secrets.INVOICEREADER_KUBE_CONFIG_PROD }}
+        run: |
+          mkdir -p ~/.kube
+          echo "${KUBESECRET// /}" | base64 --decode > ~/.kube/config
+          echo "VALUES_CHART_ENV=digitoo-prod" >> $GITHUB_ENV
+          echo "K8S_NAMESPACE=datasentics" >> $GITHUB_ENV
+
+      # Deploy to preprod
+      - name: Helm dry run
+        run: |
+          HELM_SERVICE_NAME=ds-invoicereader-finalization\
+            HELM_KUBE_CTX=digitoo \
+            HELM_NAMESPACE=${{ env.K8S_NAMESPACE }} \
+            HELM_IMAGE_TAG=${{ env.GIT_TAG }} \
+            HELM_VALUES_CHART=values.${{ env.VALUES_CHART_ENV }}.yaml \
+            HELM_SECRET_CHART=values.${{ env.VALUES_CHART_ENV }}.secret.yaml \
+            make k8s-digitoo-dry
+      - name: Helm deploy to k8s cluster
+        run: |
+          HELM_SERVICE_NAME=ds-invoicereader-finalization\
+            HELM_KUBE_CTX=digitoo \
+            HELM_NAMESPACE=${{ env.K8S_NAMESPACE }} \
+            HELM_IMAGE_TAG=${{ env.GIT_TAG }} \
+            HELM_VALUES_CHART=values.${{ env.VALUES_CHART_ENV }}.yaml \
+            HELM_SECRET_CHART=values.${{ env.VALUES_CHART_ENV }}.secret.yaml \
+            make k8s-digitoo-deploy

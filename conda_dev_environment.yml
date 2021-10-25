@@ -1,0 +1,9 @@
+name: minioci
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # ----PYTHON-------
+  - python>=3.9
+  - pip
+  - black

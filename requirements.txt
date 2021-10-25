@@ -1,0 +1,2 @@
+ds-invoicereader-common[all]>=1.3.0
+pandas

@@ -1,0 +1,33 @@
+name: Publish/Release Python package
+on:
+  push:
+    branches-ignore:
+      - "**"
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      PYPI_URL: https://pkgs.dev.azure.com/DatasenticsCommon/_packaging/DatasenticsCommon/pypi
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-python@v1
+        with:
+          python-version: "3.9"
+          architecture: "x64"
+
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pip setuptools wheel twine
+      - name: Dist
+        env:
+          PYTHON_PACKAGES_PAT: ${{ secrets.INVOICEREADER_PYTHON_PACKAGES_PAT }}
+        run: make dist_build
+
+      - name: Upload package to Pypi repository
+        env:
+          TWINE_REPOSITORY_URL: ${{ env.PYPI_URL }}/upload
+          TWINE_USERNAME: DatasenticsCommon
+          TWINE_PASSWORD: ${{ secrets.INVOICEREADER_PYTHON_PACKAGES_PAT }}
+        run: twine upload --verbose dist/*
